@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Connect Your Bank - YP Bookkeeping</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; max-width: 600px; margin: 80px auto; padding: 20px; background: #f5f5f5; }
+    .card { background: white; border-radius: 12px; padding: 40px; box-shadow: 0 2px 20px rgba(0,0,0,.08); }
+    h1 { color: #1a1a1a; margin-bottom: 8px; }
+    p { color: #666; margin-bottom: 28px; }
+    button { background: #0a85ea; color: white; border: none; padding: 14px 32px; font-size: 16px; border-radius: 8px; cursor: pointer; width: 100%; font-weight: 600; }
+    button:hover { background: #0070c9; }
+    button:disabled { background: #ccc; cursor: default; }
+    #status { margin-top: 20px; padding: 16px; border-radius: 8px; display: none; font-weight: 500; }
+    .success { background: #d4edda; color: #155724; }
+    .error { background: #f8d7da; color: #721c24; }
+    .info { background: #d1ecf1; color: #0c5460; }
+    .bank-item { background: #f0f7ff; border: 1px solid #b3d7ff; padding: 12px 16px; border-radius: 8px; margin-bottom: 8px; color: #0a5a9c; font-weight: 500; }
+    #list { margin-top: 20px; }
+  </style>
+  <script src="https://cdn.plaid.com/link/v2/stable/link-initialize.js"></script>
+</head>
+<body>
+  <div class="card">
+    <h1>🏦 Connect Bank Accounts</h1>
+    <p id="desc">Click the button below for each bank account you want to connect. You can connect as many as needed.</p>
+    <button id="btn" onclick="openPlaid()">Connect a Bank Account</button>
+    <div id="status"></div>
+    <div id="list"></div>
+  </div>
+
+  <script>
+    var N8N_BASE = 'https://n-8-n-u35578.vm.elestio.app';
+    var EXCHANGE_URL = N8N_BASE + '/webhook/plaid-exchange';
+    var TOKEN_URL = N8N_BASE + '/webhook/plaid-token';
+    var connected = [];
+    var linkToken = null;
+
+    var oauthStateId = new URLSearchParams(window.location.search).get('oauth_state_id');
+
+    function showStatus(msg, cls) {
+      var el = document.getElementById('status');
+      el.textContent = msg;
+      el.className = cls;
+      el.style.display = 'block';
+    }
+
+    function updateList() {
+      var el = document.getElementById('list');
+      el.innerHTML = '<strong style="color:#333">Connected (' + connected.length + '):</strong><br><br>' +
+        connected.map(function(b) { return '<div class="bank-item">✓ ' + b + '</div>'; }).join('');
+    }
+
+    function launchPlaid(token, resumeUri) {
+      var handler = Plaid.create({
+        token: token,
+        receivedRedirectUri: resumeUri || undefined,
+        onSuccess: function(public_token, metadata) {
+          showStatus('Saving connection...', 'info');
+          fetch(EXCHANGE_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ public_token: public_token, institution: metadata.institution })
+          })
+          .then(function(r) { return r.json(); })
+          .then(function(d) {
+            if (d.success) {
+              connected.push(d.institution_name);
+              showStatus('✅ Connected: ' + d.institution_name, 'success');
+              updateList();
+              document.getElementById('btn').disabled = false;
+              document.getElementById('btn').textContent = 'Connect Another Account';
+              document.getElementById('btn').style.display = '';
+              document.getElementById('desc').textContent = 'Account connected! Click below to connect another, or close this tab when done.';
+              // Clean URL
+              window.history.replaceState({}, '', window.location.pathname);
+            } else {
+              showStatus('Error: ' + (d.error || 'Unknown error'), 'error');
+              document.getElementById('btn').disabled = false;
+              document.getElementById('btn').textContent = 'Try Again';
+            }
+          })
+          .catch(function() {
+            showStatus('Network error — please try again.', 'error');
+            document.getElementById('btn').disabled = false;
+            document.getElementById('btn').textContent = 'Try Again';
+          });
+        },
+        onExit: function(err) {
+          document.getElementById('btn').disabled = false;
+          document.getElementById('btn').textContent = connected.length > 0 ? 'Connect Another Account' : 'Connect a Bank Account';
+          document.getElementById('btn').style.display = '';
+          if (err && err.error_message) showStatus(err.error_message, 'error');
+        }
+      });
+      handler.open();
+    }
+
+    function openPlaid() {
+      document.getElementById('btn').disabled = true;
+      document.getElementById('btn').textContent = 'Loading...';
+      // Fetch a fresh link token from n8n
+      fetch(TOKEN_URL)
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (d.link_token) {
+            linkToken = d.link_token;
+            launchPlaid(linkToken, null);
+          } else {
+            showStatus('Error getting link token: ' + JSON.stringify(d), 'error');
+            document.getElementById('btn').disabled = false;
+            document.getElementById('btn').textContent = 'Try Again';
+          }
+        })
+        .catch(function() {
+          showStatus('Could not reach n8n — check your connection.', 'error');
+          document.getElementById('btn').disabled = false;
+          document.getElementById('btn').textContent = 'Try Again';
+        });
+    }
+
+    // Auto-resume OAuth flow if returning from bank redirect
+    if (oauthStateId) {
+      document.getElementById('btn').style.display = 'none';
+      document.getElementById('desc').textContent = 'Completing bank connection...';
+      showStatus('Resuming authorization...', 'info');
+      fetch(TOKEN_URL)
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (d.link_token) {
+            linkToken = d.link_token;
+            launchPlaid(linkToken, window.location.href);
+          } else {
+            showStatus('Error resuming: ' + JSON.stringify(d), 'error');
+          }
+        });
+    }
+  </script>
+</body>
+</html>
